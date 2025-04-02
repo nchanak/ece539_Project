@@ -1,0 +1,5 @@
+OpenVid_part0.zip
+extracted_videos/
+videos/
+reconstructed_compressed.npz
+.DS_Store
