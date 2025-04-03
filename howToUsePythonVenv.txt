@@ -1,0 +1,11 @@
+# initialize a virtual environment that only has access to its own packages (no system-wide packages)
+python3 -m venv projectVenv --clear --system-site-packages
+
+# activate virtual environment
+source projectVenv/bin/activate
+
+# pip install all requirements in the requirements.txt file
+pip install -r requirements.txt
+
+# deactivate virtual environment
+deactivate
