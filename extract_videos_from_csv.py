@@ -16,9 +16,9 @@ import argparse
 #  python extract_videos_from_csv.py \
 #  --csv video_mappings/OpenVid_part0.csv \
 #  --zip_base . \
-#  --target ./raw_videos \
+#  --target ./extracted_videos \
 #  --start 0 \
-#  --max 10
+#  --max 300
 def extract_videos(csv_path, zip_base_path, target_folder, start_index=0, max_videos=None):
     with open(csv_path, newline='') as csvfile:
         reader = csv.DictReader(csvfile)
