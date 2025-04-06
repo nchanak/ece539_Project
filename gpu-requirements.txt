@@ -1,4 +1,0 @@
-jax==0.4.30
-jaxlib==0.4.30
-tensorflow-io-gcs-filesystem==0.37.1
-tensorflow-estimator==2.12.0
