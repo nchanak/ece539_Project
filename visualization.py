@@ -74,6 +74,52 @@ def generate_video_comparison_by_name(video_name, autoencoder, sequence_length, 
 
     return output_path
 
+import os
+
+def generate_and_display_comparison(
+    video_name,
+    autoencoder,
+    sequence_length,
+    height,
+    width,
+    video_folder="extracted_videos",
+    scale=4,
+    width_display=512,
+    cleanup=True,
+):
+    os.makedirs("comparisons", exist_ok=True)
+
+    # make video comparison
+    avi_path = generate_video_comparison_by_name(
+        video_name=video_name,
+        autoencoder=autoencoder,
+        sequence_length=sequence_length,
+        height=height,
+        width=width,
+        video_folder=video_folder
+    )
+
+    # put in folder
+    base_name = os.path.splitext(os.path.basename(avi_path))[0]
+    mp4_path = os.path.join("comparisons", f"{base_name}.mp4")
+
+    # avi -> mp4
+    convert_avi_to_mp4(avi_path, mp4_path=mp4_path, scale=scale)
+
+    # display html embed
+    display = display_video_inline(mp4_path, width=width_display)
+
+    # clean avi
+    if cleanup:
+        try:
+            os.remove(avi_path)
+            print(f"Deleted: {avi_path}")
+        except Exception as e:
+            print(f"[!] Failed to delete AVI: {e}")
+
+    return display
+
+
 # This conversion is so we can embed the video in a notebook
 def convert_avi_to_mp4(avi_path, mp4_path=None, crf=23, scale=4):
     if mp4_path is None:
