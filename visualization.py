@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from IPython.display import HTML
 
+# Takes video and generates list of frames in RGB, and another normalized color
 def extract_video_frames(video_path, height, width):
     cap = cv2.VideoCapture(video_path)
     raw_rgb_frames = []
@@ -21,6 +22,7 @@ def extract_video_frames(video_path, height, width):
 
     return np.array(raw_rgb_frames), np.array(norm_rgb_frames)
 
+# takes list of frames and generates the sequence list
 def create_sequences(frames, sequence_length):
     return np.array([frames[i:i+sequence_length] for i in range(len(frames) - sequence_length + 1)])
 
@@ -35,8 +37,10 @@ def save_comparison_video(original_frames, reconstructed_frames, path="side_by_s
         out.write(cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
 
     out.release()
-    print(f"[✓] Side-by-side saved: {path}")
+    print(f"[✓] Comparison saved: {path}")
 
+
+# Specify the video and autoencoder and it'll give you a side-by-side comparison of the downsampled original and the reconstructed video
 def generate_video_comparison_by_name(video_name, autoencoder, sequence_length, height, width, video_folder="extracted_videos"):
     video_path = os.path.join(video_folder, video_name)
     if not os.path.exists(video_path):
@@ -70,6 +74,7 @@ def generate_video_comparison_by_name(video_name, autoencoder, sequence_length, 
 
     return output_path
 
+# This conversion is so we can embed the video in a notebook
 def convert_avi_to_mp4(avi_path, mp4_path=None, crf=23, scale=4):
     if mp4_path is None:
         mp4_path = os.path.splitext(avi_path)[0] + ".mp4"
@@ -86,6 +91,7 @@ def convert_avi_to_mp4(avi_path, mp4_path=None, crf=23, scale=4):
     subprocess.run(command, check=True)
     return mp4_path
 
+# Make video larger inline
 def display_video_inline(path, width=512):
     height = width // 2
     return HTML(f"""
