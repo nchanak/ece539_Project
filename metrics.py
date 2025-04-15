@@ -2,6 +2,7 @@ import os
 import cv2
 import torch
 import lpips
+import random
 import numpy as np
 import tensorflow as tf
 
@@ -64,3 +65,61 @@ def compute_video_metrics(original_rgb=None, reconstructed_rgb=None, video_path=
         "ssim": np.mean(ssim_scores),
         "lpips": np.mean(lpips_scores),
     }
+
+# Evaluate metrics by video, can specify train/val split and max number of videos to evaluate
+# for performance reasons. Randomly samples from split, can specify seed for reproducibility.
+
+def evaluate_metrics_by_video(
+    split="train",
+    limit=None,
+    video_data=None,
+    video_filenames=None,
+    autoencoder=None,
+    sequence_length=None,
+    height=None,
+    width=None,
+    channels=3,
+    max_val=255.0,
+    seed=42
+):
+    assert split in ("train", "val")
+    assert video_data is not None and video_filenames is not None
+    assert autoencoder is not None
+
+    split_index = int(0.8 * len(video_data))
+    if split == "train":
+        data = video_data[:split_index]
+        filenames = video_filenames[:split_index]
+    else:
+        data = video_data[split_index:]
+        filenames = video_filenames[split_index:]
+
+    unique_videos = sorted(set(filenames))
+
+    if limit:
+        random.seed(seed)
+        unique_videos = random.sample(unique_videos, min(limit, len(unique_videos)))
+
+    results = {}
+
+    for video_name in unique_videos:
+        indices = [i for i, name in enumerate(filenames) if name == video_name]
+        original = data[indices]
+
+        reconstructed = autoencoder.predict(original, batch_size=1)
+
+        original_uint8 = (original * 255.0).astype(np.uint8)
+        reconstructed_uint8 = (reconstructed * 255.0).astype(np.uint8)
+
+        print(f"📹 Evaluating: {video_name} — {len(indices)} sequences")
+
+        metrics = compute_video_metrics(
+            original_rgb=original_uint8,
+            reconstructed_rgb=reconstructed_uint8,
+            max_val=max_val
+        )
+
+        results[video_name] = metrics
+
+    return results
+
