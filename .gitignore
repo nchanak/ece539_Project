@@ -5,3 +5,7 @@ reconstructed_compressed.npz
 .DS_Store
 tf-gpu-env/
 ece539_Project.code-workspace
+*.avi
+*.mp4
+*.npz
+*.pyc

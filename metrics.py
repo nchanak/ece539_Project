@@ -14,7 +14,7 @@ def compute_video_metrics(original_rgb=None, reconstructed_rgb=None, video_path=
     loss_fn = lpips.LPIPS(net='alex')
     loss_fn.eval()
 
-    # Case 1: use side-by-side video file
+    # just fucking look at the original mp4, only looks at one though
     if video_path:
         assert frame_width is not None, "Must provide frame_width when using video_path"
         cap = cv2.VideoCapture(video_path)
@@ -38,7 +38,8 @@ def compute_video_metrics(original_rgb=None, reconstructed_rgb=None, video_path=
             lpips_scores.append(lpips_val)
         cap.release()
 
-    # Case 2: use input sequences
+    # can also hand it the sequence tensors directly, just make sure right format, ie not normalized
+    # Will go through full sequence list
     elif original_rgb is not None and reconstructed_rgb is not None:
         num_sequences, seq_len = original_rgb.shape[:2]
         for i in range(num_sequences):
