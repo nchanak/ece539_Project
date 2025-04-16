@@ -9,3 +9,4 @@ ece539_Project.code-workspace
 *.mp4
 *.npz
 *.pyc
+training_runs/vqvae_video_compression/logs/*

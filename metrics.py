@@ -106,7 +106,8 @@ def evaluate_metrics_by_video(
         indices = [i for i, name in enumerate(filenames) if name == video_name]
         original = data[indices]
 
-        reconstructed = autoencoder.predict(original, batch_size=1)
+        prediction = autoencoder.predict(original, batch_size=1)
+        reconstructed = prediction["reconstruction"] if isinstance(prediction, dict) else prediction
 
         original_uint8 = (original * 255.0).astype(np.uint8)
         reconstructed_uint8 = (reconstructed * 255.0).astype(np.uint8)

@@ -32,9 +32,14 @@ def save_comparison_video(original_frames, reconstructed_frames, path="side_by_s
 
     for orig, rec in zip(original_frames, reconstructed_frames):
         orig_uint8 = orig.astype(np.uint8)
+        
+        # Flip red/blue in reconstructed output
         rec_uint8 = (np.clip(rec, 0, 1) * 255).astype(np.uint8)
-        combined = np.hstack((orig_uint8, rec_uint8))
+        rec_uint8 = rec_uint8[..., [2, 1, 0]]  # BGR → RGB
+
+        combined = np.hstack((orig_uint8, rec_uint8))  # ✅ uses flipped version now
         out.write(cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+
 
     out.release()
     print(f"[✓] Comparison saved: {path}")
@@ -59,9 +64,16 @@ def generate_video_comparison_by_name(video_name, autoencoder, sequence_length, 
     reconstructed_sequences = autoencoder.predict(input_sequences)
 
     # Reassemble reconstructed video: first frame + last from each sequence
-    reconstructed_frames = [reconstructed_sequences[0][0]]
-    for i in range(len(reconstructed_sequences)):
-        reconstructed_frames.append(reconstructed_sequences[i][-1])
+    # Handle dict-style output from custom model
+    if isinstance(reconstructed_sequences, dict):
+        recon_array = reconstructed_sequences["reconstruction"]
+    else:
+        recon_array = reconstructed_sequences
+
+    reconstructed_frames = [recon_array[0][0]]
+    for i in range(len(recon_array)):
+        reconstructed_frames.append(recon_array[i][-1])
+
 
     reconstructed_frames = np.array(reconstructed_frames)
 
