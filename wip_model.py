@@ -142,6 +142,12 @@ class PixelCNNPrior(tf.keras.Model):
         logits = self.pixelcnn(z_onehot)  # logits shape: (batch, T, H, W, num_embeddings)
         log_probs = tf.nn.log_softmax(logits, axis=-1)
         return tf.reduce_sum(log_probs * z_onehot, axis=-1)  # shape: (batch, T, H, W)
+    
+    def prob(self, z_indices):
+        z_onehot = tf.one_hot(z_indices, depth=self.num_embeddings)
+        logits = self.pixelcnn(z_onehot)
+        probs = tf.nn.softmax(logits, axis=-1)
+        return probs
 
 
 
@@ -269,5 +275,3 @@ class VQVAEModule(tf.keras.Model):
     @property
     def tracked_metrics(self):
         return [self.loss_tracker, self.distortion_tracker, self.rate_tracker]
-
-
