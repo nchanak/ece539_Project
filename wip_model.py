@@ -5,79 +5,121 @@ from tensorflow.keras import layers, models
 import tensorflow_addons as tfa
 import numpy as np
 
+# Beta scheduler, emphasize reconstruction early on, and then focus on prior later,
+# for efficient entropy latents on later epochs
+def linear_beta_schedule(epoch):
+    beta_start = 0.01
+    beta_end = 0.5
+    warmup_epochs = 15
+    return beta_start + (beta_end - beta_start) * tf.minimum(tf.cast(epoch, tf.float32), warmup_epochs) / warmup_epochs
+
+
+class RMSNorm(tf.keras.layers.Layer):
+    def __init__(self, dim, epsilon=1e-6):
+        super().__init__()
+        self.epsilon = epsilon
+        self.scale = self.add_weight(
+            name="scale", shape=(dim,), initializer="ones", trainable=True
+        )
+
+    def call(self, x):
+        rms = tf.sqrt(tf.reduce_mean(tf.square(x), axis=-1, keepdims=True) + self.epsilon)
+        return self.scale * x / rms
+
 # ---------------------------
 # Vector Quantizer Layer
 # ---------------------------
 class VectorQuantizer(tf.keras.layers.Layer):
-    def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.25):
-        super(VectorQuantizer, self).__init__()
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.1, gumbel_temp=1.0, usage_loss_weight=0.1):
+        super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.commitment_cost = commitment_cost
+        self.gumbel_temp = gumbel_temp
+        self.usage_loss_weight = usage_loss_weight
 
         initializer = tf.keras.initializers.VarianceScaling()
         self.embeddings = tf.Variable(
-            initializer(shape=(self.embedding_dim, self.num_embeddings)),
-            trainable=True
+            initializer(shape=(self.embedding_dim, self.num_embeddings)), trainable=True
         )
 
-    def call(self, inputs):
-        flat = tf.reshape(inputs, [-1, self.embedding_dim])
-        distances = (
+    def call(self, inputs, training=None):
+        flat = tf.reshape(inputs, [-1, self.embedding_dim])  # [BHW, D]
+
+        # Compute similarity logits (negative distances)
+        logits = -(
             tf.reduce_sum(flat ** 2, axis=1, keepdims=True)
             - 2 * tf.matmul(flat, self.embeddings)
             + tf.reduce_sum(self.embeddings ** 2, axis=0, keepdims=True)
-        )
-        encoding_indices = tf.argmin(distances, axis=1)
-        encodings = tf.one_hot(encoding_indices, self.num_embeddings)
-        quantized = tf.matmul(encodings, tf.transpose(self.embeddings))
+        )  # [BHW, K]
+
+        if training:
+            gumbel_noise = -tf.math.log(-tf.math.log(tf.random.uniform(tf.shape(logits), 1e-5, 1.0)))
+            gumbel_logits = (logits + gumbel_noise) / self.gumbel_temp
+            soft_assignments = tf.nn.softmax(gumbel_logits, axis=-1)
+        else:
+            soft_assignments = tf.one_hot(tf.argmax(logits, axis=-1), self.num_embeddings)
+
+        # Quantize
+        quantized = tf.matmul(soft_assignments, tf.transpose(self.embeddings))
         quantized = tf.reshape(quantized, tf.shape(inputs))
 
-        loss = tf.reduce_mean((tf.stop_gradient(quantized) - inputs) ** 2) + \
-               self.commitment_cost * tf.reduce_mean((quantized - tf.stop_gradient(inputs)) ** 2)
-        self.add_loss(loss)
+        # VQ loss
+        e_latent_loss = tf.reduce_mean((tf.stop_gradient(quantized) - inputs) ** 2)
+        q_latent_loss = tf.reduce_mean((quantized - tf.stop_gradient(inputs)) ** 2)
+        vq_loss = e_latent_loss + self.commitment_cost * q_latent_loss
+        self.add_loss(vq_loss)
 
+        # === Usage Loss ===
+        avg_probs = tf.reduce_mean(soft_assignments, axis=0)
+        entropy = -tf.reduce_sum(avg_probs * tf.math.log(avg_probs + 1e-10))
+        max_entropy = tf.math.log(tf.cast(self.num_embeddings, tf.float32))
+        usage_loss = -(entropy / max_entropy)  # 0: full usage, 1: collapsed
+        self.add_loss(self.usage_loss_weight * usage_loss)
+
+        # Straight-through
         quantized = inputs + tf.stop_gradient(quantized - inputs)
+        encoding_indices = tf.argmax(soft_assignments, axis=-1)
         return quantized, tf.reshape(encoding_indices, tf.shape(inputs)[:-1])
+
+
 
 def build_encoder(input_shape=(8, 64, 64, 3), latent_channels=32):
     inputs = tf.keras.Input(shape=input_shape)
 
-    x = layers.Conv3D(128, 5, strides=(1, 2, 2), padding='same')(inputs)  # → (8, 32, 32)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv3D(128, 5, strides=(1, 2, 2), padding='same')(inputs)
+    x = RMSNorm(128)(x)
     x = layers.ReLU()(x)
 
-    x = layers.Conv3D(128, 5, strides=(1, 2, 2), padding='same')(x)       # → (8, 16, 16)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv3D(128, 5, strides=(1, 2, 2), padding='same')(x)
+    x = RMSNorm(128)(x)
     x = layers.ReLU()(x)
 
     for _ in range(5):
         x = residual_block_3d(x, 128)
 
-    # Temporal downsampling only (optional)
-    x = layers.Conv3D(latent_channels, 3, strides=(2, 1, 1), padding='same')(x)  # → (4, 16, 16)
+    x = layers.Conv3D(latent_channels, 3, strides=(2, 1, 1), padding='same')(x)
     return models.Model(inputs, x, name="Encoder")
+
 
 
 # === Decoder ===
 def build_decoder(latent_shape, output_channels=3):
     inputs = tf.keras.Input(shape=latent_shape)
 
-    # Temporal upsampling (if done in encoder)
-    x = layers.Conv3DTranspose(128, 3, strides=(2, 1, 1), padding='same')(inputs)  # → (8, 16, 16)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv3DTranspose(128, 3, strides=(2, 1, 1), padding='same')(inputs)
+    x = RMSNorm(128)(x)
     x = layers.ReLU()(x)
 
     for _ in range(5):
         x = residual_block_3d(x, 128)
 
-    x = layers.Conv3DTranspose(128, 5, strides=(1, 2, 2), padding='same')(x)  # → (8, 32, 32)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv3DTranspose(128, 5, strides=(1, 2, 2), padding='same')(x)
+    x = RMSNorm(128)(x)
     x = layers.ReLU()(x)
 
-    x = layers.Conv3DTranspose(output_channels, 5, strides=(1, 2, 2), padding='same', activation='sigmoid')(x)  # → (8, 64, 64)
+    x = layers.Conv3DTranspose(output_channels, 5, strides=(1, 2, 2), padding='same', activation='sigmoid')(x)
     return models.Model(inputs, x, name="Decoder")
-
 
 # ---------------------------
 # Full Autoencoder + Quantization
@@ -99,10 +141,10 @@ def build_vq_autoencoder(input_shape, num_embeddings=512, embedding_dim=64):
 def residual_block_3d(x, filters, kernel_size=3, stride=1):
     shortcut = x
     x = layers.Conv3D(filters, kernel_size, padding='same', strides=stride)(x)
-    x = layers.BatchNormalization()(x)
+    x = RMSNorm(filters)(x)
     x = layers.ReLU()(x)
     x = layers.Conv3D(filters, kernel_size, padding='same')(x)
-    x = layers.BatchNormalization()(x)
+    x = RMSNorm(filters)(x)
     x = layers.Add()([x, shortcut])
     x = layers.ReLU()(x)
     return x
@@ -164,12 +206,13 @@ class RateDistortionLoss(tf.keras.losses.Loss):
 
         # Distortion (MS-SSIM as negative similarity -> loss)
 
-        distortion = 1 - tf.reduce_mean(ssim(
-            tf.clip_by_value(y_true, 0, 1),
-            tf.clip_by_value(y_pred["reconstruction"], 0, 1),
+        l1 = tf.reduce_mean(tf.abs(x - recon))
+        ssim = 1 - tf.reduce_mean(tf.image.ssim(
+            tf.clip_by_value(x, 0, 1),
+            tf.clip_by_value(recon, 0, 1),
             max_val=1.0
         ))
-
+        distortion = 0.85 * ssim + 0.15 * l1
 
         # Rate (log prob from PixelCNN prior)
         log_probs = self.pixelcnn_prior.log_prob(z_indices)  # custom method below
@@ -197,16 +240,18 @@ def build_vqvae_with_prior(input_shape, encoder, decoder, vq_layer, pixelcnn_pri
     return model
 
 class VQVAEModule(tf.keras.Model):
-    def __init__(self, encoder, decoder, vq_layer, pixelcnn_prior, beta=1.0):
+    def __init__(self, encoder, decoder, vq_layer, pixelcnn_prior, beta=1.0,  beta_schedule=None):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.vq_layer = vq_layer
         self.pixelcnn_prior = pixelcnn_prior
-        self.beta = beta
+        self.beta = tf.Variable(beta, trainable=False, dtype=tf.float32)
+        self.beta_schedule = beta_schedule
         self.loss_tracker = tf.keras.metrics.Mean(name="loss")
         self.distortion_tracker = tf.keras.metrics.Mean(name="distortion")
         self.rate_tracker = tf.keras.metrics.Mean(name="rate")
+        self.epoch = tf.Variable(0, trainable=False, dtype=tf.int32)
 
     def call(self, inputs):
         z_cont = self.encoder(inputs)
@@ -222,18 +267,18 @@ class VQVAEModule(tf.keras.Model):
             recon = outputs["reconstruction"]
             z_indices = outputs["z_indices"]
 
-            distortion = 1 - tf.reduce_mean(tf.image.ssim(
+            l1 = tf.reduce_mean(tf.abs(x - recon))
+            ssim = 1 - tf.reduce_mean(tf.image.ssim(
                 tf.clip_by_value(x, 0, 1),
                 tf.clip_by_value(recon, 0, 1),
                 max_val=1.0
             ))
-
-
+            distortion = 0.85 * ssim + 0.15 * l1
+            
             log_probs = self.pixelcnn_prior.log_prob(z_indices)
             rate = -tf.reduce_mean(log_probs)
-
             loss = distortion + self.beta * rate
-
+        
         grads = tape.gradient(loss, self.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
 
@@ -245,7 +290,11 @@ class VQVAEModule(tf.keras.Model):
             "loss": self.loss_tracker.result(),
             "distortion": self.distortion_tracker.result(),
             "rate": self.rate_tracker.result(),
+            "beta": self.beta,
         }
+        
+    def on_epoch_end(self, epoch, logs=None):
+        self.epoch.assign_add(1)
 
     def test_step(self, data):
         x = data
