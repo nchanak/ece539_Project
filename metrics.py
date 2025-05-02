@@ -124,3 +124,35 @@ def evaluate_metrics_by_video(
 
     return results
 
+def evaluate_single_video_metrics(
+    video_name,
+    video_data,
+    video_filenames,
+    autoencoder,
+    sequence_length,
+    height,
+    width,
+    channels=3,
+    max_val=255.0
+):
+    # Locate sequences belonging to this specific video
+    indices = [i for i, name in enumerate(video_filenames) if name == video_name]
+    if not indices:
+        raise ValueError(f"Video name {video_name} not found in dataset.")
+
+    original = video_data[indices]
+    prediction = autoencoder.predict(original, batch_size=1)
+    reconstructed = prediction["reconstruction"] if isinstance(prediction, dict) else prediction
+
+    original_uint8 = (original * 255.0).astype(np.uint8)
+    reconstructed_uint8 = (reconstructed * 255.0).astype(np.uint8)
+
+    print(f"🎞️ Evaluating metrics for: {video_name} — {len(indices)} sequences")
+
+    metrics = compute_video_metrics(
+        original_rgb=original_uint8,
+        reconstructed_rgb=reconstructed_uint8,
+        max_val=max_val
+    )
+
+    return metrics

@@ -131,6 +131,14 @@ def analyze_compression_from_video_file(
     
     # Vector-quantize to get discrete indices
     z_quant, z_indices = autoencoder.vq_layer(z_cont)  # e.g. shape of z_indices: (num_sequences, sequence_length, latent_H, latent_W)
+    
+    # --- Actual latent storage size (raw index size before entropy coding) ---
+    # Assume each z_index takes log2(num_embeddings) bits. Or use 8, 16, or 32 bits based on your system/storage method.
+
+    num_latents = np.prod(z_indices.shape)  # total number of indices
+    bits_per_index = np.ceil(np.log2(autoencoder.vq_layer.num_embeddings))  # bits per index (e.g., log2(512) = 9)
+    latent_kb_raw = (num_latents * bits_per_index) / 8 / 1024  # convert bits to KB
+
 
     # If you are using a PixelCNN prior, get the probability distribution
     logits = autoencoder.pixelcnn_prior(z_indices)  # shape: (num_sequences, sequence_length, latent_H, latent_W, 256)
@@ -148,6 +156,7 @@ def analyze_compression_from_video_file(
         "num_frames": len(norm_seq) * sequence_length,
         "input_kb_estimated": input_kb,        # Entropy-based estimate of uncompressed data
         "codec_kb": codec_kb,                  # Actual on-disk size from the traditional codec
+        "latent_kb_raw": latent_kb_raw,  # <--- Added
         "latent_kb_estimated": latent_kb,      # Entropy-based estimate from PixelCNN
         "compression_ratio_codec": input_kb / codec_kb if codec_kb > 0 else float("inf"),
         "compression_ratio_latent": input_kb / latent_kb if latent_kb > 0 else float("inf"),

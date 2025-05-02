@@ -10,9 +10,54 @@ import numpy as np
 def linear_beta_schedule(epoch):
     beta_start = 0.01
     beta_end = 0.5
-    warmup_epochs = 15
+    warmup_epochs = 3
     return beta_start + (beta_end - beta_start) * tf.minimum(tf.cast(epoch, tf.float32), warmup_epochs) / warmup_epochs
 
+class MaskedConv3D(tf.keras.layers.Layer):
+    def __init__(self, filters, kernel_size, mask_type='A', activation=None, **kwargs):
+        super().__init__()
+        self.filters = filters
+        self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size,) * 3
+        self.mask_type = mask_type  # 'A' or 'B'
+        self.activation = tf.keras.activations.get(activation)
+        self.kwargs = kwargs
+
+    def build(self, input_shape):
+        # Create the actual conv layer here
+        self.conv = tf.keras.layers.Conv3D(
+            filters=self.filters,
+            kernel_size=self.kernel_size,
+            padding='same',
+            use_bias=True,
+            **self.kwargs
+        )
+        self.conv.build(input_shape)
+
+        # Create the mask after the conv layer is built
+        kernel_shape = self.conv.kernel.shape  # (kT, kH, kW, in_channels, out_channels)
+        mask = np.ones(kernel_shape, dtype=np.float32)
+
+        kT, kH, kW = self.kernel_size
+        center = (kT // 2, kH // 2, kW // 2)
+
+        for t in range(kT):
+            for h in range(kH):
+                for w in range(kW):
+                    if t > center[0] or \
+                       (t == center[0] and h > center[1]) or \
+                       (t == center[0] and h == center[1] and w > center[2]):
+                        mask[t, h, w, :, :] = 0
+
+        if self.mask_type == 'A':
+            mask[center[0], center[1], center[2], :, :] = 0
+
+        self.mask = tf.constant(mask, dtype=tf.float32)
+
+    def call(self, inputs):
+        # Apply the mask before convolution
+        self.conv.kernel.assign(self.conv.kernel * self.mask)
+        x = self.conv(inputs)
+        return self.activation(x) if self.activation is not None else x
 
 class RMSNorm(tf.keras.layers.Layer):
     def __init__(self, dim, epsilon=1e-6):
@@ -159,39 +204,33 @@ class PixelCNNPrior(tf.keras.Model):
         self.pixelcnn = self._build_pixelcnn(input_shape, num_embeddings, num_filters, num_layers)
 
     def _build_pixelcnn(self, input_shape, num_embeddings, num_filters, num_layers):
-        T, H, W = input_shape  # This now works because it's defined in class scope
-        inputs = layers.Input(shape=(T, H, W, num_embeddings))
+        T, H, W = input_shape
+        inputs = tf.keras.Input(shape=(T, H, W, num_embeddings))
 
-        x = layers.Conv3D(num_filters, kernel_size=1, padding='same', activation='relu')(inputs)
-        for _ in range(num_layers):
-            x = layers.Conv3D(num_filters, kernel_size=3, padding='same', activation='relu')(x)
+        # First masked conv uses type 'A'
+        x = MaskedConv3D(num_filters, kernel_size=3, mask_type='A', activation='relu')(inputs)
 
-        logits = layers.Conv3D(num_embeddings, kernel_size=1, padding='same')(x)
-        return models.Model(inputs, logits, name="PixelCNNPrior")
+        # Following layers use type 'B' masks (can access current pixel too)
+        for _ in range(num_layers - 1):
+            x = MaskedConv3D(num_filters, kernel_size=3, mask_type='B', activation='relu')(x)
 
+        logits = tf.keras.layers.Conv3D(num_embeddings, kernel_size=1, padding='same')(x)
+        return tf.keras.Model(inputs, logits, name="PixelCNNPrior")
 
     def call(self, z_indices):
         z_onehot = tf.one_hot(z_indices, depth=self.num_embeddings)
         return self.pixelcnn(z_onehot)
 
     def log_prob(self, z_indices):
-        """
-        z_indices: shape (batch_size, T, H, W), integer indices into codebook
-        Returns: log-probabilities of the given indices under the autoregressive prior
-        """
-        # One-hot encode before passing to pixelcnn
         z_onehot = tf.one_hot(z_indices, depth=self.num_embeddings, dtype=tf.float32)
-        logits = self.pixelcnn(z_onehot)  # logits shape: (batch, T, H, W, num_embeddings)
+        logits = self.pixelcnn(z_onehot)
         log_probs = tf.nn.log_softmax(logits, axis=-1)
-        return tf.reduce_sum(log_probs * z_onehot, axis=-1)  # shape: (batch, T, H, W)
-    
+        return tf.reduce_sum(log_probs * z_onehot, axis=-1)
+
     def prob(self, z_indices):
         z_onehot = tf.one_hot(z_indices, depth=self.num_embeddings)
         logits = self.pixelcnn(z_onehot)
-        probs = tf.nn.softmax(logits, axis=-1)
-        return probs
-
-
+        return tf.nn.softmax(logits, axis=-1)
 
 class RateDistortionLoss(tf.keras.losses.Loss):
     def __init__(self, beta=1.0, pixelcnn_prior=None):
